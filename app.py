@@ -5,12 +5,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from supabase import Client, create_client
 
@@ -18,6 +22,8 @@ from supabase import Client, create_client
 APP_TITLE = "Gas at Call"
 PRODUCT_IDS = ["5kg", "9kg", "14kg", "19kg", "48kg"]
 PDF_DIR = Path("generated_pdfs")
+FONT_DIR = Path("assets/fonts")
+INTER_FONT_PATH = FONT_DIR / "Inter.ttf"
 VAT_RATE = Decimal("0.15")
 
 
@@ -94,13 +100,27 @@ db = get_supabase()
 
 
 def stop_with_database_setup_error(action: str, error: Exception) -> None:
-    st.error(f"Supabase blocked the app while trying to {action}.")
-    st.info(
-        "Run supabase_rls_policies.sql in the Supabase SQL editor, then refresh this app. "
-        "That file opens the app tables to the PIN-protected Streamlit app and inserts the five standard products."
-    )
+    error_text = str(error)
+    is_rls_error = "row-level security" in error_text.lower() or "rls" in error_text.lower()
+    is_missing_column = "could not find" in error_text.lower() and "schema cache" in error_text.lower()
+    if is_rls_error:
+        st.error(f"Supabase row-level security blocked the app while trying to {action}.")
+    elif is_missing_column:
+        st.error(f"Supabase is missing a database column needed to {action}.")
+    else:
+        st.error(f"Supabase could not {action}.")
+    if is_missing_column:
+        st.info(
+            "Run supabase_app_columns_repair.sql in the Supabase SQL editor, then refresh this app. "
+            "That file adds the app's missing VAT/pricing columns and asks Supabase to reload its schema cache."
+        )
+    else:
+        st.info(
+            "Run supabase_credit_notes_repair.sql in the Supabase SQL editor if this happened while creating a credit note. "
+            "If the error remains, copy the technical details below so the exact database reason is visible."
+        )
     with st.expander("Technical details"):
-        st.code(str(error))
+        st.code(error_text)
     st.stop()
 
 
@@ -185,6 +205,18 @@ def next_document_number(prefix: str, table: str, column: str) -> str:
     return f"{prefix}-{number:04d}"
 
 
+def pdf_font_names() -> tuple[str, str]:
+    if INTER_FONT_PATH.exists():
+        try:
+            pdfmetrics.registerFont(TTFont("Inter", str(INTER_FONT_PATH)))
+            pdfmetrics.registerFont(TTFont("Inter-Bold", str(INTER_FONT_PATH)))
+            pdfmetrics.registerFontFamily("Inter", normal="Inter", bold="Inter-Bold")
+            return "Inter", "Inter-Bold"
+        except Exception:
+            pass
+    return "Helvetica", "Helvetica-Bold"
+
+
 def generate_pdf(
     doc_type: str,
     number: str,
@@ -196,21 +228,61 @@ def generate_pdf(
 ) -> Path:
     PDF_DIR.mkdir(exist_ok=True)
     filename = PDF_DIR / f"{number}.pdf"
-    styles = getSampleStyleSheet()
+    regular_font, bold_font = pdf_font_names()
+    body = ParagraphStyle(
+        "Body",
+        fontName=regular_font,
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=2,
+    )
+    label = ParagraphStyle("Label", parent=body, fontName=bold_font, textColor=colors.HexColor("#374151"))
+    brand = ParagraphStyle("Brand", parent=body, fontName=bold_font, fontSize=14, leading=17)
+    doc_heading = ParagraphStyle(
+        "DocHeading",
+        parent=body,
+        fontName=bold_font,
+        fontSize=16,
+        leading=19,
+        alignment=TA_RIGHT,
+    )
+    right_meta = ParagraphStyle("RightMeta", parent=body, alignment=TA_RIGHT)
+
+    header = Table(
+        [
+            [Paragraph(APP_TITLE, brand), Paragraph(doc_type, doc_heading)],
+            [
+                Paragraph("Depot, deliveries and cylinder tracking", body),
+                Paragraph(f"{number}<br/>{doc_date.isoformat()}", right_meta),
+            ],
+        ],
+        colWidths=[95 * mm, 75 * mm],
+    )
+    header.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+
     story = [
-        Paragraph(f"<b>{APP_TITLE}</b>", styles["Title"]),
-        Paragraph(doc_type, styles["Heading2"]),
-        Paragraph(f"<b>Number:</b> {number}", styles["Normal"]),
-        Paragraph(f"<b>Date:</b> {doc_date.isoformat()}", styles["Normal"]),
-        Spacer(1, 8 * mm),
-        Paragraph(f"<b>Client:</b> {client['name']}", styles["Normal"]),
-        Paragraph(client.get("address", ""), styles["Normal"]),
-        Paragraph(client.get("contact_number", ""), styles["Normal"]),
-        Paragraph(client.get("email", ""), styles["Normal"]),
-        Spacer(1, 8 * mm),
+        header,
+        Spacer(1, 14 * mm),
+        Paragraph("Bill to", label),
+        Paragraph(client["name"], body),
+        Paragraph(client.get("address", ""), body),
+        Paragraph(client.get("contact_number", ""), body),
+        Paragraph(client.get("email", ""), body),
+        Spacer(1, 10 * mm),
     ]
     if reason:
-        story.extend([Paragraph(f"<b>Reason:</b> {reason}", styles["Normal"]), Spacer(1, 6 * mm)])
+        story.extend([Paragraph("Reason", label), Paragraph(reason, body), Spacer(1, 8 * mm)])
 
     table_rows = [["Cylinder size", "Qty", "Gas/unit ex VAT", "Cylinder/unit ex VAT", "VAT", "Line total"]]
     for item in items:
@@ -226,22 +298,44 @@ def generate_pdf(
         )
     table_rows.append(["", "", "", "", "Total", money(total)])
 
-    table = Table(table_rows, colWidths=[35 * mm, 18 * mm, 32 * mm, 38 * mm, 25 * mm, 32 * mm])
+    table = Table(
+        table_rows,
+        colWidths=[34 * mm, 16 * mm, 32 * mm, 38 * mm, 24 * mm, 30 * mm],
+        repeatRows=1,
+    )
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0c1722")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7ded8")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, 0), bold_font),
+                ("FONTNAME", (0, 1), (-1, -1), regular_font),
+                ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+                ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+                ("LEADING", (0, 0), (-1, -1), 11),
                 ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                ("FONTNAME", (4, -1), (-1, -1), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.35, colors.HexColor("#111827")),
+                ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("FONTNAME", (4, -1), (-1, -1), bold_font),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f9fafb")),
             ]
         )
     )
     story.append(table)
 
-    doc = SimpleDocTemplate(str(filename), pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm)
+    doc = SimpleDocTemplate(
+        str(filename),
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+    )
     doc.build(story)
     return filename
 
@@ -443,15 +537,97 @@ def stock_page() -> None:
             st.rerun()
 
     st.subheader("Stock on hand")
-    st.dataframe(
-        pd.DataFrame([{"Product": product["id"], "In stock": stock.get(product["id"], 0)} for product in products]),
+    stock_df = pd.DataFrame([{"Product": product["id"], "In stock": stock.get(product["id"], 0)} for product in products])
+    st.altair_chart(
+        alt.Chart(stock_df)
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#2563eb")
+        .encode(
+            x=alt.X("Product:N", title=None, sort=PRODUCT_IDS),
+            y=alt.Y("In stock:Q", title="Cylinders"),
+            tooltip=["Product", "In stock"],
+        )
+        .properties(height=260),
         use_container_width=True,
-        hide_index=True,
     )
+    st.dataframe(stock_df, use_container_width=True, hide_index=True)
 
     st.subheader("Stock movement history")
     movements = get_stock_movements()
     if movements:
+        movement_chart_df = pd.DataFrame(
+            [
+                {
+                    "Date": movement["movement_date"],
+                    "Product": movement["product_id"],
+                    "Type": movement["movement_type"],
+                    "Qty": int(movement["quantity"]),
+                }
+                for movement in movements
+            ]
+        )
+        movement_chart_df["Date"] = pd.to_datetime(movement_chart_df["Date"])
+        daily_movements = (
+            movement_chart_df.groupby(["Date", "Product", "Type"], as_index=False)["Qty"]
+            .sum()
+            .sort_values(["Date", "Product"])
+        )
+        st.altair_chart(
+            alt.Chart(daily_movements)
+            .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+            .encode(
+                x=alt.X("Date:T", title=None, axis=alt.Axis(format="%d %b", labelAngle=0)),
+                xOffset=alt.XOffset("Product:N", sort=PRODUCT_IDS),
+                y=alt.Y("Qty:Q", title="Net movement"),
+                color=alt.Color(
+                    "Type:N",
+                    title="Type",
+                    scale=alt.Scale(
+                        domain=["purchase", "sale", "credit_note", "adjustment"],
+                        range=["#16a34a", "#dc2626", "#0d9488", "#7c3aed"],
+                    ),
+                ),
+                opacity=alt.Opacity("Product:N", title="Product", sort=PRODUCT_IDS),
+                tooltip=[
+                    alt.Tooltip("Date:T", title="Date"),
+                    "Product",
+                    "Type",
+                    alt.Tooltip("Qty:Q", title="Quantity"),
+                ],
+            )
+            .properties(height=260),
+            use_container_width=True,
+        )
+
+        cumulative_stock = daily_movements.groupby(["Date", "Product"], as_index=False)["Qty"].sum()
+        date_product_index = pd.MultiIndex.from_product(
+            [sorted(cumulative_stock["Date"].unique()), PRODUCT_IDS],
+            names=["Date", "Product"],
+        )
+        cumulative_stock = (
+            cumulative_stock.set_index(["Date", "Product"])
+            .reindex(date_product_index, fill_value=0)
+            .groupby(level="Product")
+            .cumsum()
+            .reset_index()
+        )
+        cumulative_stock["Stock level"] = cumulative_stock["Qty"]
+        st.altair_chart(
+            alt.Chart(cumulative_stock)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("Date:T", title=None),
+                y=alt.Y("Stock level:Q", title="Cylinders"),
+                color=alt.Color("Product:N", sort=PRODUCT_IDS),
+                tooltip=[
+                    alt.Tooltip("Date:T", title="Date"),
+                    "Product",
+                    alt.Tooltip("Stock level:Q", title="Stock level"),
+                ],
+            )
+            .properties(height=260),
+            use_container_width=True,
+        )
+
         movement_rows = [
             {
                 "Date": movement["movement_date"],

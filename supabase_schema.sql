@@ -167,32 +167,32 @@ alter table public.credit_note_items enable row level security;
 
 drop policy if exists "gas_at_call_anon_all" on public.clients;
 drop policy if exists "gas_at_call_public_all" on public.clients;
-create policy "gas_at_call_public_all" on public.clients for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.clients for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.products;
 drop policy if exists "gas_at_call_public_all" on public.products;
-create policy "gas_at_call_public_all" on public.products for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.products for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.stock_movements;
 drop policy if exists "gas_at_call_public_all" on public.stock_movements;
-create policy "gas_at_call_public_all" on public.stock_movements for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.stock_movements for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.invoices;
 drop policy if exists "gas_at_call_public_all" on public.invoices;
-create policy "gas_at_call_public_all" on public.invoices for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.invoices for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.invoice_items;
 drop policy if exists "gas_at_call_public_all" on public.invoice_items;
-create policy "gas_at_call_public_all" on public.invoice_items for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.invoice_items for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.payments;
 drop policy if exists "gas_at_call_public_all" on public.payments;
-create policy "gas_at_call_public_all" on public.payments for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.payments for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.credit_notes;
 drop policy if exists "gas_at_call_public_all" on public.credit_notes;
-create policy "gas_at_call_public_all" on public.credit_notes for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.credit_notes for all to anon, authenticated using (true) with check (true);
 
 drop policy if exists "gas_at_call_anon_all" on public.credit_note_items;
 drop policy if exists "gas_at_call_public_all" on public.credit_note_items;
-create policy "gas_at_call_public_all" on public.credit_note_items for all to public using (true) with check (true);
+create policy "gas_at_call_public_all" on public.credit_note_items for all to anon, authenticated using (true) with check (true);
